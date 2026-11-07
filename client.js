@@ -7,10 +7,13 @@ window.__ModuleLoader__.load({
     const NS = 'agent-compare'
     const API = '/agent-compare/api'
     const ROW_HEIGHT = 22
+    const STORE = (globalThis.__agentCompareStore ||= {})
+    if (!STORE.diffCache) STORE.diffCache = new Map()
+    if (!STORE.analysisCache) STORE.analysisCache = new Map()
 
     const ZH = {
       panel: '代码比对',
-      tagline: '像 JetBrains Compare 一样看差异，让 Agent 只评审你正在看的地方',
+      tagline: '专业并排比对，让 Agent 只评审你正在看的地方',
       'mode.folders': '文件夹',
       'mode.files': '文件',
       'mode.git': 'Git 工作区',
@@ -129,7 +132,7 @@ window.__ModuleLoader__.load({
 
     const EN = {
       panel: 'Agent Compare',
-      tagline: 'JetBrains-style diffs, with AI review scoped to what you are reading',
+      tagline: 'Professional side-by-side diffs, with review scoped to what you are reading',
       'mode.folders': 'Folders',
       'mode.files': 'Files',
       'mode.git': 'Git worktree',
@@ -662,7 +665,7 @@ window.__ModuleLoader__.load({
       const {
         t, diff, loading, selectedFile, expanded, setExpanded,
         focus, setFocus, onAnalyze, onPrev, onNext, wrap, setWrap,
-        scrollRef, analysisCache, onShowCached,
+        scrollRef, analysisCache, onShowCached, onScroll,
       } = props
       const rows = useMemo(() => diff ? buildDisplayRows(diff, expanded) : [], [diff, expanded])
       const hunkBlocks = useMemo(() => diff ? diff.blocks.map((block, index) => ({ block, index })).filter((item) => item.block.type === 'hunk') : [], [diff])
@@ -693,8 +696,9 @@ window.__ModuleLoader__.load({
       }
 
       const hasChanges = diff.blocks.some((block) => block.type === 'hunk')
-      const currentHunk = focus?.hunkIndex ?? -1
-      const entry = selectedFile
+      const entry = selectedFile ?? { status: diff.status ?? 'modified', leftSize: null, rightSize: null }
+      const densityTotal = diff.added + diff.deleted
+      const addedPercent = densityTotal > 0 ? Math.round((diff.added / densityTotal) * 100) : 0
 
       return h('div', { className: 'ac-diff' },
         h('div', { className: 'ac-diff-head' },
@@ -702,7 +706,14 @@ window.__ModuleLoader__.load({
             h('span', { className: classNames('ac-status-badge', 'ac-status-' + entry.status) }, tr(t, statusKey(entry.status))),
             h('span', { className: 'ac-diff-path', title: diff.path }, diff.path),
             h('span', { className: 'ac-diff-lang' }, diff.language),
-            h('span', { className: 'ac-diff-counts' }, tr(t, 'diff.count', { added: diff.added, deleted: diff.deleted }))
+            h('span', { className: 'ac-diff-counts' }, tr(t, 'diff.count', { added: diff.added, deleted: diff.deleted })),
+            densityTotal > 0 ? h('span', {
+              className: 'ac-density',
+              title: `+${diff.added} / −${diff.deleted}`,
+            },
+              h('i', { className: 'ac-density-add', style: { width: addedPercent + '%' } }),
+              h('i', { className: 'ac-density-del', style: { width: (100 - addedPercent) + '%' } })
+            ) : null
           ),
           h('div', { className: 'ac-diff-actions' },
             h('button', { type: 'button', className: 'ac-btn ac-btn-ghost', onClick: onPrev, disabled: hunkBlocks.length === 0, title: 'F7' }, h(IconArrowLeft, { size: 15 }), tr(t, 'diff.prev')),
@@ -719,7 +730,7 @@ window.__ModuleLoader__.load({
           h('div', { className: 'ac-col-head ac-col-left' }, h('span', null, tr(t, 'left')), entry.leftSize !== null ? h('small', null, formatBytes(entry.leftSize)) : null),
           h('div', { className: 'ac-col-head ac-col-right' }, h('span', null, tr(t, 'right')), entry.rightSize !== null ? h('small', null, formatBytes(entry.rightSize)) : null)
         ),
-        h('div', { className: classNames('ac-diff-scroll', wrap && 'ac-wrap'), ref: scrollRef },
+        h('div', { className: classNames('ac-diff-scroll', wrap && 'ac-wrap'), ref: scrollRef, onScroll },
           h('div', { className: 'ac-diff-content' },
             rows.map((item, index) => renderDiffRow({
               item, index, t, focus, diff, analysisCache, filePath: selectedFile?.path ?? '',
@@ -755,7 +766,7 @@ window.__ModuleLoader__.load({
       const focused = focus && focus.displayIndex === index
       const hunkKey = item.hunkIndex === null ? null : `${item.hunkIndex}`
       const cached = hunkKey !== null
-        ? analysisCache.get(makeAnalysisKey(filePath, item, row))
+        ? analysisCache.get(makeAnalysisKey(filePath, item.hunkIndex))
         : null
       return h('div', {
         key: 'r' + index,
@@ -795,8 +806,12 @@ window.__ModuleLoader__.load({
         : segment.text)
     }
 
-    function makeAnalysisKey(path, item, row) {
-      return `${path}|${item.hunkIndex ?? 'file'}|${row?.leftNo ?? 0}|${row?.rightNo ?? 0}`
+    function makeAnalysisKey(path, hunkIndex) {
+      return `${path}|${hunkIndex === null || hunkIndex === undefined ? 'file' : hunkIndex}`
+    }
+
+    function makeDiffKey(meta, path) {
+      return [meta.mode, meta.left, meta.right, meta.repo, meta.base, path].join('\u0000')
     }
 
     function buildDisplayRows(diff, expanded) {
@@ -1130,21 +1145,21 @@ window.__ModuleLoader__.load({
       const [base, setBase] = useState(() => load('base', 'HEAD'))
       const [autoAnalyze, setAutoAnalyze] = useState(() => load('auto', '1') !== '0')
       const [wrap, setWrap] = useState(() => load('wrap', '1') !== '0')
-      const [scan, setScan] = useState(null)
+      const [scan, setScan] = useState(() => STORE.scan ?? null)
       const [scanning, setScanning] = useState(false)
-      const [selected, setSelected] = useState(null)
-      const [diff, setDiff] = useState(null)
+      const [selected, setSelected] = useState(() => STORE.selected ?? null)
+      const [diff, setDiff] = useState(() => STORE.diff ?? null)
       const [diffLoading, setDiffLoading] = useState(false)
-      const [analysis, setAnalysis] = useState(null)
-      const [analysisMeta, setAnalysisMeta] = useState(null)
+      const [analysis, setAnalysis] = useState(() => STORE.analysis ?? null)
+      const [analysisMeta, setAnalysisMeta] = useState(() => STORE.analysisMeta ?? null)
       const [analysisLoading, setAnalysisLoading] = useState(false)
       const [analysisError, setAnalysisError] = useState('')
       const [hoverCard, setHoverCard] = useState(null)
       const [agentOpen, setAgentOpen] = useState(true)
       const [floatOpen, setFloatOpen] = useState(false)
       const [floatPos, setFloatPos] = useState({ x: 360, y: 190 })
-      const [focus, setFocusState] = useState(null)
-      const [expanded, setExpanded] = useState(() => new Set())
+      const [focus, setFocusState] = useState(() => STORE.focus ?? null)
+      const [expanded, setExpanded] = useState(() => new Set(STORE.expanded ? [...STORE.expanded] : []))
       const [filter, setFilter] = useState('')
       const [statusFilter, setStatusFilter] = useState('changed')
       const [browse, setBrowse] = useState(null)
@@ -1153,10 +1168,11 @@ window.__ModuleLoader__.load({
       const [toast, setToast] = useState('')
       const [notice, setNotice] = useState('')
 
-      const scanMeta = useRef(null)
+      const scanMeta = useRef(STORE.scanMeta ?? null)
       const diffReq = useRef(0)
       const analysisReq = useRef(0)
-      const analysisCache = useRef(new Map())
+      const analysisCache = useRef(STORE.analysisCache)
+      const diffCache = useRef(STORE.diffCache)
       const analyzeTimer = useRef(null)
       const hoverTimer = useRef(null)
       const diffScrollRef = useRef(null)
@@ -1169,6 +1185,29 @@ window.__ModuleLoader__.load({
       useEffect(() => { save('base', base) }, [base])
       useEffect(() => { save('auto', autoAnalyze ? '1' : '0') }, [autoAnalyze])
       useEffect(() => { save('wrap', wrap ? '1' : '0') }, [wrap])
+
+      useEffect(() => {
+        STORE.scan = scan
+        STORE.scanMeta = scanMeta.current
+        STORE.selected = selected
+        STORE.diff = diff
+        STORE.focus = focus
+        STORE.analysis = analysis
+        STORE.analysisMeta = analysisMeta
+        STORE.expanded = expanded ? Array.from(expanded) : []
+      }, [scan, selected, diff, focus, analysis, analysisMeta, expanded])
+
+      useEffect(() => {
+        if (!diff || !selected) return
+        const container = diffScrollRef.current
+        if (!container) return
+        const saved = STORE.diffScroll
+        if (!saved || saved.path !== selected) return
+        const frame = requestAnimationFrame(() => {
+          container.scrollTop = saved.top
+        })
+        return () => cancelAnimationFrame(frame)
+      }, [diff, selected])
 
       useEffect(() => {
         let alive = true
@@ -1204,6 +1243,17 @@ window.__ModuleLoader__.load({
         setError('')
         setExpanded(new Set())
         scanMeta.current = null
+        diffCache.current.clear()
+        analysisCache.current.clear()
+        STORE.scan = null
+        STORE.scanMeta = null
+        STORE.selected = null
+        STORE.diff = null
+        STORE.focus = null
+        STORE.analysis = null
+        STORE.analysisMeta = null
+        STORE.expanded = []
+        STORE.diffScroll = null
       }
 
       async function doScan() {
@@ -1233,11 +1283,16 @@ window.__ModuleLoader__.load({
         setAnalysis(null)
         setHoverCard(null)
         setExpanded(new Set())
+        diffCache.current.clear()
+        analysisCache.current.clear()
+        STORE.diffScroll = null
         const request = { mode, left: left.trim(), right: right.trim(), repo: repo.trim(), base: base.trim() || 'HEAD' }
         try {
           const result = await api('/scan', { method: 'POST', body: JSON.stringify(request) })
           setScan(result)
           scanMeta.current = { ...request, project: result.project }
+          STORE.scanMeta = scanMeta.current
+          STORE.scan = result
           const first = result.files.find((file) => file.status !== 'unchanged') || result.files[0]
           setNotice(tr(t, 'notice.scanned', { changed: result.stats.addedFiles + result.stats.removedFiles + result.stats.modifiedFiles }))
           if (first) await openFile(first.path, result, request)
@@ -1254,9 +1309,15 @@ window.__ModuleLoader__.load({
         if (!scanData || !meta) return
         const entry = scanData.files.find((file) => file.path === filePath)
         if (!entry) return
+        // Re-clicking the open file must not throw away the rendered diff.
+        if (selected === filePath && diff) return
+
+        const request = ++diffReq.current
+        const cacheKey = makeDiffKey(meta, entry.path)
+        const cached = diffCache.current.get(cacheKey)
         setSelected(filePath)
-        setDiff(null)
-        setDiffLoading(true)
+        setDiff(cached ?? null)
+        setDiffLoading(!cached)
         setFocusState(null)
         setAnalysis(null)
         setAnalysisMeta(null)
@@ -1264,13 +1325,19 @@ window.__ModuleLoader__.load({
         setHoverCard(null)
         setExpanded(new Set())
         setError('')
-        const request = ++diffReq.current
+        if (cached) return
+
         try {
           const body = { mode: meta.mode, left: meta.left, right: meta.right, repo: meta.repo, base: meta.base, path: entry.path }
           const data = await api('/diff', { method: 'POST', body: JSON.stringify(body) })
           if (request !== diffReq.current) return
           setDiff(data)
           setDiffLoading(false)
+          diffCache.current.set(cacheKey, data)
+          if (diffCache.current.size > 16) {
+            const oldest = diffCache.current.keys().next().value
+            if (oldest !== undefined) diffCache.current.delete(oldest)
+          }
           if (autoAnalyze) {
             const hunk = data.blocks.find((block) => block.type === 'hunk')
             if (hunk) {
@@ -1316,7 +1383,7 @@ window.__ModuleLoader__.load({
 
       async function showCard(diffData, entry, focusObj, anchor) {
         if (!diffData || !entry) return
-        const key = makeAnalysisKey(entry.path, { hunkIndex: focusObj?.hunkIndex ?? 'file' }, focusObj ? { leftNo: focusObj.leftNo, rightNo: focusObj.rightNo } : {})
+        const key = makeAnalysisKey(entry.path, focusObj?.hunkIndex ?? null)
         const cached = analysisCache.current.get(key)
         const position = anchor || { x: Math.max(24, (window.innerWidth || 1200) - 420), y: 170 }
         if (cached) {
@@ -1349,6 +1416,10 @@ window.__ModuleLoader__.load({
           const result = await api('/analyze', { method: 'POST', body: JSON.stringify(payload) })
           if (request !== analysisReq.current) return
           analysisCache.current.set(key, result.analysis)
+          if (analysisCache.current.size > 80) {
+            const oldest = analysisCache.current.keys().next().value
+            if (oldest !== undefined) analysisCache.current.delete(oldest)
+          }
           setAnalysis(result.analysis)
           setAnalysisMeta(result.meta)
           setHoverCard((previous) => previous ? { ...previous, loading: false, analysis: result.analysis, meta: result.meta } : null)
@@ -1370,7 +1441,7 @@ window.__ModuleLoader__.load({
           if (nextFocus.hunkIndex !== null && diff && selected) {
             const entry = scan?.files.find((file) => file.path === selected)
             if (!entry) return
-            const key = makeAnalysisKey(selected, nextFocus, nextFocus)
+            const key = makeAnalysisKey(selected, nextFocus.hunkIndex)
             const cached = analysisCache.current.get(key)
             if (cached) {
               setHoverCard({ ...position, analysis: cached, loading: false })
@@ -1510,6 +1581,9 @@ window.__ModuleLoader__.load({
                     onPrev: () => navigateHunk(-1), onNext: () => navigateHunk(1),
                     wrap, setWrap, scrollRef: diffScrollRef, analysisCache: analysisCache.current,
                     onShowCached,
+                    onScroll: (event) => {
+                      if (selected) STORE.diffScroll = { path: selected, top: event.currentTarget.scrollTop }
+                    },
                   })
                 ),
                 h(AgentReview, {
@@ -1828,6 +1902,98 @@ window.__ModuleLoader__.load({
 .ac-statusbar { display: flex; align-items: center; gap: 12px; padding: 3px 12px; border-top: 1px solid var(--ac-border); background: var(--ac-layer); color: var(--ac-muted); font-size: 9.5px; flex: 0 0 auto; min-height: 22px; }
 .ac-status-item { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 42%; }
 .ac-status-spacer { flex: 1; }
+
+/* Layered visual pass: stronger surfaces, quieter metadata, clearer text hierarchy. */
+.ac-root {
+  --ac-canvas: color-mix(in srgb, var(--ac-bg) 95%, #000 5%);
+  --ac-surface-1: var(--ac-layer);
+  --ac-surface-2: var(--ac-layer2);
+  --ac-surface-3: color-mix(in srgb, var(--ac-layer2) 86%, var(--ac-text) 14%);
+  --ac-line: color-mix(in srgb, var(--ac-border) 82%, transparent);
+  --ac-line-strong: color-mix(in srgb, var(--ac-border2) 92%, transparent);
+  --ac-text-soft: color-mix(in srgb, var(--ac-text) 91%, transparent);
+  --ac-text-faint: color-mix(in srgb, var(--ac-muted) 70%, transparent);
+  --ac-gutter: color-mix(in srgb, var(--ac-surface-2) 46%, transparent);
+  --ac-code-bg: color-mix(in srgb, var(--ac-bg) 96%, #000 4%);
+  --ac-shadow: 0 12px 34px rgba(0,0,0,.24);
+  background: var(--ac-canvas);
+}
+.ac-toolbar {
+  background: linear-gradient(180deg, color-mix(in srgb, var(--ac-surface-1) 93%, var(--ac-text) 7%), var(--ac-surface-1));
+  border-bottom-color: var(--ac-line);
+  box-shadow: 0 1px 0 color-mix(in srgb, #fff 3%, transparent), 0 10px 26px -22px #000;
+}
+.ac-brand-icon {
+  background: linear-gradient(145deg, color-mix(in srgb, var(--ac-accent) 30%, transparent), color-mix(in srgb, var(--ac-accent) 8%, transparent));
+  border: 1px solid color-mix(in srgb, var(--ac-accent) 25%, transparent);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.14), 0 4px 14px color-mix(in srgb, var(--ac-accent) 16%, transparent);
+}
+.ac-title { font-size: 14.5px; font-weight: 700; letter-spacing: .1px; }
+.ac-subtitle { color: var(--ac-text-faint); }
+.ac-segmented { background: color-mix(in srgb, var(--ac-canvas) 72%, transparent); border-color: var(--ac-line); box-shadow: inset 0 1px 3px rgba(0,0,0,.16); }
+.ac-seg { color: var(--ac-text-faint); }
+.ac-seg-active { background: var(--ac-surface-2); color: var(--ac-text); box-shadow: 0 1px 0 rgba(255,255,255,.04), 0 2px 8px rgba(0,0,0,.18); }
+.ac-paths { background: var(--ac-surface-1); border-bottom-color: var(--ac-line); box-shadow: inset 0 -1px 0 color-mix(in srgb, #fff 2%, transparent); }
+.ac-field-label { font-size: 9.5px; letter-spacing: .8px; opacity: .66; }
+.ac-input { background: var(--ac-canvas); border-color: var(--ac-line); color: var(--ac-text); }
+.ac-input:hover { border-color: color-mix(in srgb, var(--ac-muted) 42%, transparent); }
+.ac-input:focus { background: var(--ac-surface-1); border-color: color-mix(in srgb, var(--ac-accent) 70%, transparent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ac-accent) 14%, transparent); }
+.ac-input-btn, .ac-swap-btn { background: var(--ac-canvas); border-color: var(--ac-line); }
+.ac-input-btn:hover, .ac-swap-btn:hover { background: var(--ac-surface-2); }
+.ac-sidebar { background: var(--ac-surface-1); border-right-color: var(--ac-line); box-shadow: 1px 0 0 color-mix(in srgb, #fff 2%, transparent); }
+.ac-project { background: linear-gradient(180deg, color-mix(in srgb, var(--ac-surface-2) 52%, transparent), transparent 82%); border-bottom-color: var(--ac-line); }
+.ac-project-name { font-size: 13px; }
+.ac-stat { padding: 4px 7px; border: 1px solid var(--ac-line); border-radius: 7px; background: color-mix(in srgb, var(--ac-canvas) 52%, transparent); }
+.ac-stat-label { font-size: 10px; opacity: .72; }
+.ac-stat-value { font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.ac-lang { background: color-mix(in srgb, var(--ac-canvas) 52%, transparent); }
+.ac-file { padding: 6px 8px; border: 1px solid transparent; border-radius: 8px; margin-bottom: 1px; }
+.ac-file:hover { background: var(--ac-surface-2); border-color: var(--ac-line); }
+.ac-file-active { background: color-mix(in srgb, var(--ac-accent) 11%, var(--ac-surface-2)); border-color: color-mix(in srgb, var(--ac-accent) 35%, var(--ac-line)); box-shadow: inset 2px 0 0 var(--ac-accent), 0 2px 8px -6px #000; }
+.ac-file-name { font-size: 12px; font-weight: 550; }
+.ac-file-dir { opacity: .55; }
+.ac-main { background: var(--ac-canvas); }
+.ac-diff { background: var(--ac-canvas); }
+.ac-diff-head { position: relative; z-index: 2; background: linear-gradient(180deg, var(--ac-surface-1), color-mix(in srgb, var(--ac-surface-1) 95%, var(--ac-canvas) 5%)); border-bottom-color: var(--ac-line); box-shadow: 0 2px 10px -8px #000; }
+.ac-diff-path { font-size: 12.5px; font-weight: 560; }
+.ac-diff-lang, .ac-diff-counts { background: color-mix(in srgb, var(--ac-canvas) 55%, transparent); border: 1px solid var(--ac-line); border-radius: 5px; padding: 1px 6px; }
+.ac-density { width: 54px; height: 5px; flex: 0 0 54px; display: flex; overflow: hidden; border-radius: 999px; background: color-mix(in srgb, var(--ac-border) 90%, transparent); }
+.ac-density i { display: block; height: 100%; }
+.ac-density-add { background: var(--ac-add); }
+.ac-density-del { background: var(--ac-del); }
+.ac-diff-columns { background: color-mix(in srgb, var(--ac-surface-2) 90%, var(--ac-canvas) 10%); border-bottom-color: var(--ac-line-strong); }
+.ac-col-head { padding: 7px 12px; font-size: 9px; letter-spacing: .9px; text-transform: uppercase; color: var(--ac-text-faint); }
+.ac-diff-scroll { background: var(--ac-code-bg); }
+.ac-code-row { border-bottom-color: color-mix(in srgb, var(--ac-line) 38%, transparent); }
+.ac-code-row:hover { background: color-mix(in srgb, var(--ac-text) 2.5%, transparent); }
+.ac-cell { border-right-color: color-mix(in srgb, var(--ac-line) 65%, transparent); }
+.ac-ln { background: var(--ac-gutter); border-right: 1px solid color-mix(in srgb, var(--ac-line) 50%, transparent); color: var(--ac-text-faint); opacity: .75; font-size: 9.5px; line-height: 22px; }
+.ac-code { color: var(--ac-text-soft); font-size: 12px; line-height: 22px; padding: 0 10px; }
+.ac-row-focus { background: color-mix(in srgb, var(--ac-accent) 6%, transparent); }
+.ac-row-focus .ac-cell { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ac-accent) 70%, transparent); }
+.ac-hunk-head { background: color-mix(in srgb, var(--ac-surface-2) 85%, var(--ac-accent) 5%); border-color: var(--ac-line); padding: 4px 12px; }
+.ac-hunk-head > span { background: color-mix(in srgb, var(--ac-accent) 9%, transparent); border: 1px solid color-mix(in srgb, var(--ac-accent) 18%, transparent); border-radius: 5px; padding: 1px 7px; color: color-mix(in srgb, var(--ac-accent) 55%, var(--ac-text)); }
+.ac-hunk-btn { background: var(--ac-surface-1); border-color: var(--ac-line); }
+.ac-gap { background: var(--ac-surface-1); }
+.ac-agent { background: var(--ac-surface-1); border-left-color: var(--ac-line); box-shadow: -1px 0 0 color-mix(in srgb, #fff 2%, transparent); }
+.ac-agent-head { background: linear-gradient(180deg, var(--ac-surface-2), var(--ac-surface-1)); padding: 11px 13px; }
+.ac-agent-scroll { padding: 14px 13px 18px; }
+.ac-issue { background: var(--ac-canvas); border-color: var(--ac-line); }
+.ac-score-ring { filter: drop-shadow(0 2px 10px color-mix(in srgb, var(--ac-accent) 18%, transparent)); }
+.ac-hover { background: color-mix(in srgb, var(--ac-surface-1) 92%, transparent); backdrop-filter: blur(14px) saturate(1.15); border-color: var(--ac-line-strong); box-shadow: 0 24px 70px rgba(0,0,0,.42), inset 0 1px 0 rgba(255,255,255,.04); }
+.ac-float { background: color-mix(in srgb, var(--ac-surface-1) 94%, transparent); backdrop-filter: blur(16px) saturate(1.1); box-shadow: 0 24px 70px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.04); }
+.ac-modal { background: var(--ac-surface-1); box-shadow: 0 30px 90px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.04); }
+.ac-hero-card { background: linear-gradient(180deg, color-mix(in srgb, var(--ac-surface-2) 55%, transparent), var(--ac-surface-1)); box-shadow: 0 12px 30px -24px #000; }
+.ac-hero-card-active { background: linear-gradient(180deg, color-mix(in srgb, var(--ac-accent) 12%, var(--ac-surface-2)), var(--ac-surface-1)); box-shadow: 0 0 0 1px color-mix(in srgb, var(--ac-accent) 20%, transparent), 0 16px 40px -28px color-mix(in srgb, var(--ac-accent) 55%, transparent); }
+.ac-hero-mark { box-shadow: inset 0 1px 0 rgba(255,255,255,.12), 0 18px 50px -24px color-mix(in srgb, var(--ac-accent) 70%, transparent); }
+.ac-statusbar { background: var(--ac-surface-1); border-top-color: var(--ac-line); }
+.ac-toast { background: var(--ac-surface-2); box-shadow: 0 18px 46px rgba(0,0,0,.4); }
+@media (max-width: 1500px) {
+  .ac-diff-lang, .ac-density { display: none; }
+  .ac-diff-head { gap: 6px; padding: 7px 10px; }
+  .ac-diff-actions .ac-btn { padding: 6px 8px; }
+  .ac-diff-counts { font-size: 10px; }
+}
 @media (max-width: 1120px) {
   .ac-agent { width: 300px; flex-basis: 300px; }
   .ac-sidebar { width: 270px; flex-basis: 270px; }

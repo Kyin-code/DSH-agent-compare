@@ -1,6 +1,6 @@
 # Agent Compare: one sidebar entry, one main panel.
 # The Host half owns the HTTP bridge to the Rust diff engine and the LLM review
-# call. The Client half renders the JetBrains-style compare page.
+# call. The Client half renders the professional compare page.
 #
 # The row id is intentionally distinct from the client panel key. The row id is
 # the Host composition identity; the client registers the sidebar/main keys.

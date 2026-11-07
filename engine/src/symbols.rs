@@ -130,6 +130,38 @@ fn count_matches(regex: &str, text: &str) -> usize {
         .unwrap_or(0)
 }
 
+const COMMON_TYPOS: &[(&str, &str)] = &[
+    ("recieve", "receive"),
+    ("seperate", "separate"),
+    ("occured", "occurred"),
+    ("adress", "address"),
+    ("lenght", "length"),
+    ("sucess", "success"),
+    ("neccessary", "necessary"),
+    ("definately", "definitely"),
+    ("enviroment", "environment"),
+    ("paramter", "parameter"),
+    ("funciton", "function"),
+    ("widht", "width"),
+    ("heigth", "height"),
+    ("calback", "callback"),
+    ("responce", "response"),
+    ("existance", "existence"),
+    ("maintainance", "maintenance"),
+    ("compatability", "compatibility"),
+    ("dependancy", "dependency"),
+    ("buisness", "business"),
+];
+
+fn typo_hits(text: &str) -> Vec<String> {
+    let lower = text.to_ascii_lowercase();
+    COMMON_TYPOS
+        .iter()
+        .filter(|(typo, _)| lower.contains(typo))
+        .map(|(typo, correct)| format!("{}→{}", typo, correct))
+        .collect()
+}
+
 pub fn risk_hints(
     path: &str,
     status: &str,
@@ -215,6 +247,23 @@ pub fn risk_hints(
         });
     }
 
+    let old_typos = typo_hits(old);
+    let new_typos: Vec<String> = typo_hits(new)
+        .into_iter()
+        .filter(|typo| !old_typos.contains(typo))
+        .collect();
+    if !new_typos.is_empty() {
+        risks.push(Risk {
+            severity: "low".into(),
+            kind: "spelling".into(),
+            title: "疑似拼写错误".into(),
+            detail: format!(
+                "新增拼写：{}。建议在提交前修正标识符或注释。",
+                new_typos.iter().take(8).cloned().collect::<Vec<_>>().join("、")
+            ),
+        });
+    }
+
     if language == "Rust" {
         let old_unwrap = count_matches(r"\.unwrap\(\)|\.expect\(", old);
         let new_unwrap = count_matches(r"\.unwrap\(\)|\.expect\(", new);
@@ -280,5 +329,18 @@ mod tests {
             &[],
         );
         assert!(risks.iter().any(|risk| risk.kind == "possible-secret"));
+    }
+
+    #[test]
+    fn flags_a_new_typo() {
+        let risks = risk_hints(
+            "helper.js",
+            "modified",
+            "JavaScript",
+            "export function receive(value) {}",
+            "export function recieve(value) {}",
+            &[],
+        );
+        assert!(risks.iter().any(|risk| risk.kind == "spelling"));
     }
 }
