@@ -1,0 +1,7 @@
+engine/target/
+node_modules/
+artifacts/
+*.log
+.DS_Store
+Thumbs.db
+samples/gitrepo/
