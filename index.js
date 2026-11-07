@@ -443,8 +443,8 @@ async function streamAnalysis(llm, target, prompt) {
       ...(target.reasoningEffort ? { reasoningEffort: target.reasoningEffort } : {}),
       system: SYSTEM_PROMPT,
       messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
-      temperature: 0.2,
-      maxTokens: 2400,
+      temperature: 0.1,
+      maxTokens: 6000,
       signal: controller.signal,
     })
     let text = ''
@@ -454,6 +454,8 @@ async function streamAnalysis(llm, target, prompt) {
       if (chunk.type === 'finish') {
         if (chunk.reason.kind === 'error' || chunk.reason.kind === 'aborted') {
           failure = chunk.reason.failure
+        } else if (chunk.reason.kind === 'max-tokens') {
+          failure = { code: 'max-tokens', message: 'model reached max tokens before completing the JSON review' }
         }
       }
     }
